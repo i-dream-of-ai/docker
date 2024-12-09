@@ -1,12 +1,13 @@
 import asyncio
 import signal
 import sys
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import mcp.types as types
-from mcp.server import NotificationOptions, Server
+from mcp.server import NotificationOptions, Server, RequestContext
 from mcp.server.models import InitializationOptions
 import mcp.server.stdio
-from .handlers import DockerHandlers
+from handlers import DockerHandlers
+
 
 server = Server("docker-mcp")
 
@@ -152,18 +153,78 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any] | None) -> List[
     if not arguments and name != "list-containers":
         raise ValueError("Missing arguments")
 
+
+    ctx = server.request_context
+    progress_token = ctx.meta.progress_token if ctx and ctx.meta else None
+    
     try:
+        if progress_token:
+            await ctx.session.send_progress_notification(
+                progress_token=progress_token,
+                progress=0,
+                total=1.0
+            )
+        result = None
         if name == "create-container":
-            return await DockerHandlers.handle_create_container(arguments)
+            if progress_token:
+                await ctx.session.send_progress_notification(
+                    progress_token=progress_token,
+                    progress=0.3,
+                    message="Creating Containers...",
+                    error="Container creation has failed, check logs...",
+                    total=1.0
+                )
+            result = await DockerHandlers.handle_create_container(arguments, ctx)
         elif name == "deploy-compose":
-            return await DockerHandlers.handle_deploy_compose(arguments)
+            if progress_token:
+                await ctx.session.send_progress_notification(
+                    progress_token=progress_token,
+                    progress=0.3,
+                    message="Docker compose deployment is in progress...",
+                    error="Deployment failed, check logs...",
+                    total=1.0
+                )
+            result = await DockerHandlers.handle_deploy_compose(arguments, ctx)
         elif name == "get-logs":
-            return await DockerHandlers.handle_get_logs(arguments)
+            if progress_token:
+                await ctx.session.send_progress_notification(
+                    progress_token=progress_token,
+                    progress=0.3,
+                    message="Getting logs...",
+                    error="Logs fetching failed...",
+                    total=1.0
+                )
+            result = await DockerHandlers.handle_get_logs(arguments, ctx)
         elif name == "list-containers":
-            return await DockerHandlers.handle_list_containers(arguments)
+            if progress_token:
+                await ctx.session.send_progress_notification(
+                    progress_token=progress_token,
+                    progress=0.3,
+                    message="Listing containers...",
+                    error="Error listing containers...",
+                    total=1.0
+                )
+            result = await DockerHandlers.handle_list_containers(arguments, ctx)
         else:
             raise ValueError(f"Unknown tool: {name}")
+        if progress_token:
+            await ctx.session.send_progress_notification(
+                progress_token=progress_token,
+                progress=1.0,
+                message="Checking server...",
+                error="Error running this server...",
+                total=1.0
+            )
+        return result
     except Exception as e:
+        if progress_token:
+            await ctx.session.send_progress_notification(
+                progress_token=progress_token,
+                progress=1.0,
+                total=1.0,
+                message="Error completing operations...",
+                error=str(e)
+            )
         return [types.TextContent(type="text", text=f"Error: {str(e)} | Arguments: {arguments}")]
 
 
